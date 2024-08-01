@@ -1,0 +1,544 @@
+# ---------------------------------------------------------------------------- #
+# Libraries
+
+# If necessary, install packages
+install.packages("neuralnet")
+install.packages("caret")
+install.packages("mice")
+install.packages('fastDummies')
+
+library(fastDummies) # dummy degisken yaratmak icin
+library(neuralnet)# yapay sinir aginin insasi 
+library(caret) # metriklerin hesaplanmasi ve veri standardizasyonu
+library(mice) # kayip veri kontrolu
+
+# ---------------------------------------------------------------------------- #
+# Data Preprocessing & Dummy variables
+# ---------------------------------------------------------------------------- #
+
+# Verilerin okunmasi
+data_file = "C:/Users/gokcegok/Downloads/rent_price_dataset_buca.csv"
+df <- read.csv(file = data_file)
+
+head(df)
+str(df)
+
+# Eksik/kayip veri kontrolu
+md.pattern(df) # There is no missing data
+
+# Dummy degiskenlerin yaratilmasi
+df_dummy <- dummy_cols(df, select_columns = c("location", "floor_type"))
+
+# Verisetine kategorik degiskenlerin duzey sayisi - 1 kadar sutun eklemek amaciyla
+# fazla sutunlar verisetinden cikarilir.
+
+df_dummy <- subset(df_dummy, select = -c(location_sirinyer, location, floor_type, floor_type_garden))
+df_dummy <- df_dummy[,c(6,7,1,2,3,4,8,9,10,5)] # changing columns sort
+
+str(df_dummy)
+
+# Coklu dogrusal regresyon icin kategorik verilerin "factor" veri tipine 
+# donusturulmesi gerekiyor. Ancak yapay sinir agi ile yapilacak modelleme 
+# icin bagimsiz degiskenlerin factor veri tipinde olmamasi gerekiyor.
+# (Kullanilan kutuphaneden kaynaklanan bir kisitlama)
+# Bu yuzden verisetinin iki ayrı versiyonunu tutuyoruz.
+
+# df_dummy --> numerik veri
+# df_factor --> kategorik verilerin factor olarak tutuldugu veri
+
+df_factor <- df_dummy 
+df_factor$location_iscievleri <- as.factor(df_factor$location_iscievleri)
+df_factor$location_merkez <- as.factor(df_factor$location_merkez)
+df_factor$furnishing_status <- as.factor(df_factor$furnishing_status)
+df_factor$floor_type_ground <- as.factor(df_factor$floor_type_ground)
+df_factor$floor_type_intermediate <- as.factor(df_factor$floor_type_intermediate)
+df_factor$floor_type_top <- as.factor(df_factor$floor_type_top)
+str(df_factor)
+
+# Ortalamalarla Veri Standardizasyonu
+
+scaleModel <- preProcess(df_factor, method=c("center", "scale"))
+mlrData <- predict(scaleModel, df_factor)
+
+# Tahminlemelerden sonra price sutunu icin scaling islemini tersine cevirebilmek
+# icin reverseScale adinda bir fonksiyon olusturulmustur.
+
+reverseScale <- function(x, model) {
+  
+  # Bu fonksiyon daha once prtalamaya gore verileri [-1, 1] araligina ceken 
+  # bir olcekleme modeliyle standardize edilen verileri orijinal veriyle 
+  # ayni olcege donusturur.
+  
+  # Parametreler: x <- Standardize edilmis veri
+  #               model <-olcekleme icin kullanilan model
+  
+  # Cikti: Geri donusturulmus veri
+  
+  reverse <- x * model[["std"]]["price"] + model[["mean"]]["price"]
+  
+  return(reverse)
+  
+}
+
+# ---------------------------------------------------------------------------- #
+# COKLU DOGRUSAL REGRESYON
+# ---------------------------------------------------------------------------- #
+
+# Egitim ve test verisinin ayrılmasi
+
+set.seed(20)
+trainIndex <- sample(1:nrow(mlrData), 0.80*nrow(mlrData))
+trainData <-  mlrData[trainIndex, ]
+testData <-  mlrData[-trainIndex, ]
+
+nrow(trainData)
+nrow(testData)
+
+# Dogrusal Regresyon Modeli 
+modelMLR <- lm(formula = price ~ gross + floor_type_ground +
+              building_age + building_age*building_age + furnishing_status +
+              gross * building_age, data=trainData)
+
+summary(modelMLR)
+
+plot(modelMLR)
+
+# Coklu Dogrusal Regresyon ile tahminleme
+
+predMLR_test <- predict(modelMLR, newdata=testData, interval="confidence", level = 0.95)
+fittedValuesMLR_test <- unname(predMLR_test[,1])
+
+predMLR_train <- predict(modelMLR, newdata=trainData, interval="confidence", level = 0.95)
+fittedValuesMLR_train <- unname(predMLR_train[,1])
+
+R2(fittedValuesMLR_test, testData$price)
+R2(fittedValuesMLR_train, trainData$price)
+
+# ---------------------------------------------------------------------------- #
+# YAPAY SINIR AGLARI
+# ---------------------------------------------------------------------------- #
+
+# Verilerin Standardizasyonu
+
+NNData <- predict(scaleModel, df_dummy)
+
+trainData_nn <-  NNData[trainIndex, ]
+testData_nn <-  NNData[-trainIndex, ]
+
+nrow(trainData_nn)
+nrow(testData_nn)
+
+str(trainData_nn)
+
+# --------------------------------- #
+# 1. Yapay Sinir Agi
+# Gizli Katman Sayisi: 1, Nöron Sayisi: 4
+# Ogrenme Orani : 0.05
+# Esik Deger : 0.04
+# --------------------------------- #
+
+modelNN1 <- neuralnet(price ~ ., data=trainData_nn,
+                      hidden=4, threshold=0.04,
+                      learningrate = 0.05,
+                      linear.output = TRUE,
+                      err.fct="sse")
+
+plot(modelNN1)
+
+# model NN1 ile egitim ve test verisi icin tahminleme
+
+# egitim verisi
+fitted_values_1 <- modelNN1$net.result[[1]]
+
+# test verisi
+pred_test_1 <- predict(modelNN1, testData_nn)
+
+# R2
+R2(pred_test_1, testData_nn$price)
+R2(fitted_values_1, trainData_nn$price)
+
+# --------------------------------- #
+# 2. Yapay Sinir Agi
+# Gizli Katman Sayisi: 1, Nöron Sayisi: 4
+# Öğrenme Orani : 0.05
+# Esik Deger : 0.01
+# --------------------------------- #
+
+modelNN2 <- neuralnet(price ~ ., data=trainData_nn,
+                      hidden=4, threshold=0.01,
+                      learningrate = 0.05,
+                      linear.output = TRUE,
+                      err.fct="sse")
+
+plot(modelNN2)
+
+# modelNN2 ile egitim ve test verisi icin tahminleme
+
+# egitim verisi
+fitted_values_2 <- modelNN2$net.result[[1]]
+
+# test verisi
+pred_test_2 <- predict(modelNN2, testData_nn)
+
+# R2
+R2(pred_test_2, testData_nn$price)
+R2(fitted_values_2, trainData_nn$price)
+
+# ----------------------------------------- #
+# 3. Yapay Sinir Agi
+# Gizli Katman Sayisi: 2, Nöron Sayisi: 3, 2
+# Öğrenme Orani : 0.05
+# Esik Deger : 0.01
+# ----------------------------------------- #
+
+modelNN3 <- neuralnet(price ~ ., data=trainData_nn,
+                      hidden=c(3,2), threshold=0.01,
+                      learningrate = 0.05,
+                      linear.output = TRUE,
+                      err.fct="sse")
+
+plot(modelNN3)
+
+# modelNN3 ile egitim ve test verisi icin tahminleme
+
+# egitim verisi
+fitted_values_3 <- modelNN3$net.result[[1]]
+
+# test verisi
+pred_test_3 <- predict(modelNN3, testData_nn)
+
+# R2
+R2(pred_test_3, testData_nn$price)
+R2(fitted_values_3, trainData_nn$price)
+
+# ----------------------------------------- #
+# 4. Yapay Sinir Agi
+# Gizli Katman Sayisi: 4, Nöron Sayisi: 8, 8, 16, 64
+# Ogrenme Orani : 0.05
+# Esik Deger : 0.04
+# ----------------------------------------- #
+
+modelNN4 <- neuralnet(price ~ ., data=trainData_nn,
+                      hidden=c(8,8,16,64), threshold=0.04,
+                      learningrate = 0.05,
+                      linear.output = TRUE,
+                      err.fct="sse")
+
+
+plot(modelNN4)
+
+# modelNN4 ile egitim ve test verisi icin tahminleme
+
+# egitim verisi
+fitted_values_4 <- modelNN4$net.result[[1]]
+
+# test verisi
+pred_test_4 <- predict(modelNN4, testData_nn)
+
+# R2
+R2(pred_test_4, testData_nn$price)
+R2(fitted_values_4, trainData_nn$price)
+
+# ---------------------------------------------- #
+# 5. Yapay Sinir Agi
+# Gizli Katman Sayisi: 5, Nöron Sayisi: 8, 16, 64, 16, 8
+# Ogrenme Hizi : 0.05
+# Esik Deger : 0.01
+# ---------------------------------------------- #
+
+modelNN5 <- neuralnet(price ~ ., data=trainData_nn,
+                      hidden=c(8,16,64,16,8), threshold=0.01,
+                      learningrate = 0.05,
+                      linear.output = TRUE,
+                      err.fct="sse")
+
+plot(modelNN5)
+
+# modelNN5 ile egitim ve test verisi icin tahminleme
+
+# egitim verisi
+fitted_values_5 <- modelNN5$net.result[[1]]
+
+# test verisi
+pred_test_5 <- predict(modelNN5, testData_nn)
+
+# R2
+R2(pred_test_5, testData_nn$price)
+R2(fitted_values_5, trainData_nn$price)
+
+# -------------------------------------- #
+# 6. Yapay Sinir Agi
+# Gizli Katman Sayisi: 4, Nöron Sayisi: 16,8,4,2
+# Lr : 0.01
+# Th : 0.04
+# -------------------------------------- #
+
+modelNN6 <- neuralnet(price ~ ., data=trainData_nn,
+                      hidden=c(16,8,4,2), threshold=0.04,
+                      learningrate = 0.01,
+                      linear.output = TRUE,
+                      err.fct="sse")
+
+plot(modelNN6)
+
+# modelNN6 icin egitim ve test verisi icin tahminleme
+
+# egitim verisi
+fitted_values_6 <- modelNN6$net.result[[1]]
+
+# test verisi
+pred_test_6 <- predict(modelNN6, testData_nn)
+
+# R2
+R2(pred_test_6, testData_nn$price)
+R2(fitted_values_6, trainData_nn$price)
+
+# ---------------------------------------------------------------------------- #
+# MODELLERIN METRIKLER ILE KARSILASTIRILMASI(R2, RMSE, MAE)
+# ---------------------------------------------------------------------------- #
+
+# --------------------------------------------- #
+# 1. Test Verisi Uzerinden Karsilastirma
+# --------------------------------------------- #
+
+# R2
+# r2_test --> vector of R2s(test verisi ile hesaplanan)
+
+r2_test <- c(R2(fittedValuesMLR_test, testData$price),
+             R2(pred_test_1, testData_nn$price),
+             R2(pred_test_2, testData_nn$price),
+             R2(pred_test_3, testData_nn$price),
+             R2(pred_test_4, testData_nn$price),
+             R2(pred_test_5, testData_nn$price),
+             R2(pred_test_6, testData_nn$price))
+
+df_r2_test <- data.frame(r2_test)
+names(df_r2_test) <- c("R-squared")
+rownames(df_r2_test) <- c("MLR", "NN 1", "NN 2", "NN 3", 
+                          "NN4", "NN5", "NN6")
+
+barplot(height=as.matrix(df_r2_test), ylim=range(pretty(c(0, max(df_r2_test)))),
+        main="Test Verisi ile Hesaplanan R-kareler", ylab="", beside=TRUE,
+        col=rainbow(7), space = 0.2, legend.text = TRUE, 
+        args.legend = list(x = "topleft", inset = c(0.03, -0.15), cex=0.5))
+# RMSE 
+# rmse_test --> vector of RMSEs(test verisiyle hesaplanan)
+
+rmse_test <- c(RMSE(fittedValuesMLR_test, testData$price),
+               RMSE(pred_test_1, testData_nn$price),
+               RMSE(pred_test_2, testData_nn$price),
+               RMSE(pred_test_3, testData_nn$price),
+               RMSE(pred_test_4, testData_nn$price),
+               RMSE(pred_test_5, testData_nn$price),
+               RMSE(pred_test_6, testData_nn$price))
+
+#MAE
+# mae_test --> vector of MAEs(test verisiyle hesaplanan)
+
+mae_test <- c(MAE(fittedValuesMLR_test, testData$price),
+              MAE(pred_test_1, testData_nn$price),
+              MAE(pred_test_2, testData_nn$price),
+              MAE(pred_test_3, testData_nn$price),
+              MAE(pred_test_4, testData_nn$price),
+              MAE(pred_test_5, testData_nn$price),
+              MAE(pred_test_6, testData_nn$price))
+
+# Hatalarin cubuk grafigi ile gosterimi
+
+errors_test <- data.frame(rmse_test, mae_test)
+names(errors_test) <- c("RMSE","MAE")
+rownames(errors_test) <- c("MLR", "NN 1", "NN 2", "NN 3", "NN4", "NN5", "NN6")
+
+barplot(height=as.matrix(errors_test), ylim=range(pretty(c(0, max(errors_test)))),
+        main="Test Verisi ile Hesaplanan Hatalar (RMSE, MAE)", ylab="", beside=TRUE,
+        col=rainbow(7), legend.text = TRUE, 
+        args.legend = list(x = "topright", inset = c(-0.0, -0.13), cex=0.5))
+
+# ---------------------------------------------- #
+# 2. Egitim Verisi Uzerinden Karsilastirma #
+# ---------------------------------------------- #
+
+# R2
+# r2_train --> vector of R2s(egitim verisiyle hesaplanan)
+
+r2_train <- c(R2(fittedValuesMLR_train, trainData$price),
+             R2(fitted_values_1, trainData_nn$price),
+             R2(fitted_values_2, trainData_nn$price),
+             R2(fitted_values_3, trainData_nn$price),
+             R2(fitted_values_4, trainData_nn$price),
+             R2(fitted_values_5, trainData_nn$price),
+             R2(fitted_values_6, trainData_nn$price))
+
+df_r2_train <- data.frame(r2_train)
+names(df_r2_train) <- c("R-squared")
+rownames(df_r2_train) <- c("MLR", "NN 1", "NN 2", "NN 3", "NN4", "NN5", "NN6")
+
+barplot(height=as.matrix(df_r2_train), ylim=range(pretty(c(0, max(df_r2_train)))),
+        main="Eğitim Verisi ile Hesaplanan R-kareler", ylab="", beside=TRUE,
+        col=rainbow(7), space = 0.2, legend.text = TRUE, 
+        args.legend = list(x = "topleft", inset = c(0.02, -0.10), cex=0.5))
+
+# RMSE 
+# rmse_train --> vector of RMSEs(egitim verisiyle hesaplanan)
+
+rmse_train <- c(RMSE(fittedValuesMLR_train, trainData$price),
+               RMSE(fitted_values_1, trainData_nn$price),
+               RMSE(fitted_values_2, trainData_nn$price),
+               RMSE(fitted_values_3, trainData_nn$price),
+               RMSE(fitted_values_4, trainData_nn$price),
+               RMSE(fitted_values_5, trainData_nn$price),
+               RMSE(fitted_values_6, trainData_nn$price))
+
+#MAE
+# mae_train --> vector of MAEs(egitim verisiyle hesaplanan)
+
+mae_train <- c(MAE(fittedValuesMLR_train, trainData$price),
+               MAE(fitted_values_1, trainData_nn$price),
+               MAE(fitted_values_2, trainData_nn$price),
+               MAE(fitted_values_3, trainData_nn$price),
+               MAE(fitted_values_4, trainData_nn$price),
+               MAE(fitted_values_5, trainData_nn$price),
+               MAE(fitted_values_6, trainData_nn$price))
+
+errors_train <- data.frame(rmse_train, mae_train)
+names(errors_train) <- c("RMSE","MAE")
+rownames(errors_train) <- c("MLR", "NN 1", "NN 2", "NN 3", "NN4", "NN5", "NN6")
+
+barplot(height=as.matrix(errors_train), ylim=range(pretty(c(0, max(errors_train)))),
+        main="Eğitim Verisi ile Hesaplanan Hatalar (RMSE, MAE)", ylab="", beside=TRUE,
+        col=rainbow(7), legend.text = TRUE, 
+        args.legend = list(x = "topright", inset = c(-0.0, -0.0), cex=0.5))
+
+# ------------------------------------------------------- #
+# Egitim ve Test Verisi ile Metriklerin Karsilastirilmasi #
+# ------------------------------------------------------- #
+
+r2 <- c(r2_train, r2_test)
+df_r2 <- data.frame(r2)
+
+rmse <- c(rmse_train, rmse_test)
+df_rmse <- data.frame(rmse)
+
+mae <- c(mae_train, mae_test)
+df_mae <- data.frame(mae)
+
+barplot(height=as.matrix(df_r2), ylim=range(pretty(c(0, max(df_r2)))),
+        main="Eğitim ve Test Verisi için R-kare Değerleri", beside=TRUE, 
+        space=0.2, col=rainbow(7))
+
+barplot(height=as.matrix(df_rmse), ylim=range(pretty(c(0, max(df_rmse)))),
+        main="Eğitim ve Test Verisi için RMSE Değerleri", beside=TRUE, 
+        space=0.2, col=rainbow(7))
+
+barplot(height=as.matrix(df_mae), ylim=range(pretty(c(0, max(df_mae)))),
+        main="Eğitim ve Test Verisi için MAE Değerleri", beside=TRUE, 
+        space=0.2, col=rainbow(7))
+
+# ------------------------------------------------------------------------------- #
+# Dogrusal Regresyon Modeli ile Yapay Sinir Aglari Ciktilarinin Karsilastirilmasi # 
+# ------------------------------------------------------------------------------- #
+
+# Test Verisi
+
+R2_1 <- data.frame(c(R2(fittedValuesMLR_test, testData$price),
+               R2(pred_test_6, testData_nn$price)))
+names(R2_1) <- c("R2")
+rownames(R2_1) <- c("MLR", "NN1")
+
+barplot(height=as.matrix(R2_1), ylim=range(pretty(c(0, max(R2_1)))),
+        main="MLR vs NN6 (Test Verisi)", beside=TRUE, 
+        space=0.2, col=rainbow(2),
+        args.legend = list(x = "topleft", inset = c(-0.0, -0.0), cex=0.5))
+
+RMSE_1 <- data.frame(c(RMSE(fittedValuesMLR_test, testData$price),
+                       RMSE(pred_test_6, testData_nn$price)))
+names(RMSE_1) <- c("RMSE")
+rownames(RMSE_1) <- c("MLR", "NN2")
+
+barplot(height=as.matrix(RMSE_1), ylim=range(pretty(c(0, max(RMSE_1)))),
+        main="MLR vs NN6 (Test Verisi)", beside=TRUE, 
+        space=0.2, col=rainbow(5),
+        args.legend = list(x = "topright", inset = c(-0.0, -0.0), cex=0.5))
+
+MAE_1 <- data.frame(c(MAE(fittedValuesMLR_test, testData$price),
+                       MAE(pred_test_6, testData_nn$price)))
+names(MAE_1) <- c("MAE")
+rownames(MAE_1) <- c("MLR", "NN2")
+
+barplot(height=as.matrix(MAE_1), ylim=range(pretty(c(0, max(MAE_1)))),
+        main="MLR vs NN6 (Test Verisi)", beside=TRUE, 
+        space=0.2, col=rainbow(7),
+        args.legend = list(x = "topleft", inset = c(-0.0, -0.0), cex=0.5))
+
+# Egitim Verisi
+
+R2_1 <- data.frame(c(R2(fittedValuesMLR_train, trainData$price),
+                     R2(fitted_values_6, trainData_nn$price)))
+names(R2_1) <- c("R2")
+rownames(R2_1) <- c("MLR", "NN2")
+
+barplot(height=as.matrix(R2_1), ylim=range(pretty(c(0, max(R2_1)))),
+        main="MLR vs NN6 (Eğitim Verisi)", beside=TRUE, 
+        space=0.2, col=rainbow(2),
+        args.legend = list(x = "topleft", inset = c(-0.0, -0.0), cex=0.5))
+
+RMSE_1 <- data.frame(c(RMSE(fittedValuesMLR_train, trainData$price),
+                       RMSE(fitted_values_6, trainData_nn$price)))
+names(RMSE_1) <- c("RMSE")
+rownames(RMSE_1) <- c("MLR", "NN2")
+
+barplot(height=as.matrix(RMSE_1), ylim=range(pretty(c(0, max(RMSE_1)))),
+        main="MLR vs NN6 (Eğitim Verisi)", beside=TRUE, 
+        space=0.2, col=rainbow(5),
+        args.legend = list(x = "topleft", inset = c(-0.0, -0.0), cex=0.5))
+
+MAE_1 <- data.frame(c(MAE(fittedValuesMLR_train, trainData$price),
+                      MAE(fitted_values_6, trainData_nn$price)))
+names(MAE_1) <- c("MAE")
+rownames(MAE_1) <- c("MLR", "NN2")
+
+barplot(height=as.matrix(MAE_1), ylim=range(pretty(c(0, max(MAE_1)))),
+        main="MLR vs NN6 (Eğitim Verisi)", beside=TRUE, 
+        space=0.2, col=rainbow(7),
+        args.legend = list(x = "topleft", inset = c(-0.0, -0.0), cex=0.5))
+
+# -------- #
+# Metrikler  #
+# -------- #
+
+train_metrics <- data.frame(r2_train, rmse_train, mae_train)
+names(train_metrics) <- c("R2", "RMSE","MAE")
+rownames(train_metrics) <- c("MLR", "NN 1", "NN 2", "NN 3", "NN4", "NN5", "NN6")
+
+test_metrics <- data.frame(r2_test, rmse_test, mae_test)
+names(test_metrics) <- c("R2", "RMSE","MAE")
+rownames(test_metrics) <- c("MLR", "NN 1", "NN 2", "NN 3", "NN4", "NN5", "NN6")
+
+# --------------------------------------------------------- #
+# Tahmin Degerleri ile Orijinal Verinin Karsilastirilmasi   #
+# --------------------------------------------------------- #
+
+plot(reverseScale(pred_test_3, scaleModel), type="o", col="red",
+     xlab = "Index", ylab = "Kira(tl)", 
+     main = "Test Verisi vs Tahmin Değerleri")
+lines(reverseScale(testData$price, scaleModel), type = "o", col = "blue")
+lines(reverseScale(pred_test_1, scaleModel), type = "o", col = "orange")
+legend("topleft", bty="n", legend=c("Test Verisi", "NN1", "NN3"),
+       col=c("blue", "orange", "red"), lty=1, cex=0.8, pch="o")
+
+plot(reverseScale(fitted_values_3, scaleModel), type="o", col="red",
+     xlab = "Index", ylab = "Kira(tl)", 
+     main = "Eğitim Verisi vs Tahmin Değerleri")
+lines(reverseScale(trainData$price, scaleModel), type = "o", col = "blue")
+lines(reverseScale(fitted_values_1, scaleModel), type = "o", col = "orange")
+legend("topright", bty="n", legend=c("Eğitim Verisi", "NN1", "NN3"),
+       col=c("blue", "orange", "red"), lty=1, cex=0.8, pch="o")
+
+pred_comp <- data.frame(reverseScale(testData$price, scaleModel), reverseScale(pred_test_1, scaleModel))
+
+plot(reverseScale(pred_test_1, scaleModel), type="o", col="blue",
+     xlab = "Index", ylab = "Kira(tl)", 
+     main = "Test Verisi vs Tahmin Değerleri")
+lines(reverseScale(testData$price, scaleModel), type = "o", col = "orange")
+legend("topleft", bty="n", legend=c("Test Verisi", "NN1"),
+       col=c("blue", "orange"), lty=1, cex=0.8, pch="o")
