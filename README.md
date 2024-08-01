@@ -1,2 +1,2 @@
 # Neural-Networks
-1. R paketlerine alternatif olduğunu düşündüğünüz paketleri, veri analizi ile  sunmak .  2. Seçeceğiniz orijinal bir veri seti üzerinde yanıt değişkeninin yapısına  uygun alternatif yöntemleri uygulayarak performans karşılaştırmalarını yapmak ve analiz  sonuçlarını sunmak. 
+1. Bu çalışmada, Daha önce Çoklu Doğrusal Regresyon analizi için İzmir'in Buca ilçesindeki kiralık evlere ait bilgileri barındıran https://www.hepsiemlak.com/ sitesinden elde edilen verilerle hazırlanmış veri seti üzerinde Neural Networks algoritması çalışılacaktır. Verisetinde bulanan verilere dair detaylı açıklamalar ilerleyen satırlarda yapılacak. 
